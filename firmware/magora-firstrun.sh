@@ -46,11 +46,21 @@ LAT=$(read_config lat)
 LON=$(read_config lon)
 WIFI_SSID=$(read_config wifi_ssid)
 WIFI_PASSWORD=$(read_config wifi_password)
+WIFI_COUNTRY=$(read_config wifi_country)
+[ -z "$WIFI_COUNTRY" ] && WIFI_COUNTRY="US"
 
 log "Node: $NODE_NAME"
 
 # Configure WiFi
 log "Configuring WiFi ($WIFI_SSID)..."
+# Set the WiFi regulatory country FIRST. Pi OS keeps the WiFi radio soft-blocked
+# until a country is set, and 5GHz channels are unavailable without it — the #1
+# cause of "boots fine but never joins WiFi" (cost us hours on the first 3B+ node).
+# Defaults to US; override with a "wifi_country" field in magora-config.json.
+log "Setting WiFi country ($WIFI_COUNTRY)..."
+raspi-config nonint do_wifi_country "$WIFI_COUNTRY" 2>/dev/null || true
+rfkill unblock wifi 2>/dev/null || true
+iw reg set "$WIFI_COUNTRY" 2>/dev/null || true
 nmcli radio wifi on || true
 nmcli connection delete magora-wifi 2>/dev/null || true
 nmcli connection add type wifi ifname wlan0 con-name magora-wifi \
