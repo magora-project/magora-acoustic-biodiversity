@@ -101,7 +101,7 @@ LOCEOF
 
 # Download firmware scripts
 # Update DETECT_SHA intentionally when releasing a new firmware version.
-DETECT_SHA=e05b4b92114f64c00cee6dfe000ed341565bc89d
+DETECT_SHA=f0c1940acd7b35877e0af44a810fc3d2bc27ab9a
 log "Downloading detect.py (${DETECT_SHA:0:7})..."
 wget -q -O /home/magora/detect.py \
   "https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/${DETECT_SHA}/firmware/detect.py"
