@@ -2,6 +2,7 @@ import subprocess
 import requests
 import json
 import os
+import re
 import time
 import math
 import numpy as np
@@ -309,10 +310,78 @@ def fetch_whitelist():
     print("No whitelist — running without species filtering")
     return None
 
+def list_capture_cards():
+    """Parse `arecord -l` into a list of (card_number, id, description)."""
+    try:
+        out = subprocess.run(
+            ["arecord", "-l"], capture_output=True, text=True, timeout=10
+        ).stdout
+    except Exception as ex:
+        print(f"arecord -l failed: {ex}")
+        return []
+    cards = []
+    for line in out.splitlines():
+        # e.g. "card 1: Device [USB PnP Sound Device], device 0: USB Audio [...]"
+        m = re.match(r"card (\d+): (\S+) \[([^\]]*)\]", line)
+        if m:
+            cards.append((int(m.group(1)), m.group(2), m.group(3)))
+    return cards
+
+def detect_audio_device():
+    """Auto-detect a capture device so any attached mic 'just works'.
+
+    Returns (device_string, is_i2s). Priority:
+      1. USB audio mic -> plughw:<card>,0  (ALSA converts any rate/format/ch)
+      2. I2S adau7002  -> hw:adau7002,0    (bit-exact path for existing nodes)
+      3. any other non-onboard capture card -> plughw:<card>,0
+    USB is preferred over adau7002 because the image always loads the adau7002
+    overlay, which presents a phantom capture card even when no I2S mic is wired
+    — so a real USB mic should win. Returns (None, False) if nothing has
+    enumerated yet.
+    """
+    cards = list_capture_cards()
+    if not cards:
+        return (None, False)
+    for num, cid, desc in cards:
+        if "usb" in f"{cid} {desc}".lower():
+            return (f"plughw:{num},0", False)
+    for num, cid, desc in cards:
+        if "adau7002" in f"{cid} {desc}".lower():
+            return ("hw:adau7002,0", True)
+    for num, cid, desc in cards:
+        if "bcm2835" not in f"{cid} {desc}".lower():
+            return (f"plughw:{num},0", False)
+    return (f"plughw:{cards[0][0]},0", False)
+
+def select_audio_device():
+    """Detect the mic at startup, retrying — a USB mic can enumerate a few
+    seconds after the service starts."""
+    for attempt in range(6):
+        device, is_i2s = detect_audio_device()
+        if device:
+            print(f"Audio device: {device} ({'I2S adau7002' if is_i2s else 'USB/generic'})")
+            return device, is_i2s
+        print(f"No capture device yet (attempt {attempt + 1}/6), waiting for mic...")
+        time.sleep(5)
+    print("WARNING: no audio capture device detected — will keep retrying in the loop")
+    return None, False
+
+def arecord_cmd(device, is_i2s, filename):
+    """Build the arecord command for the detected device."""
+    if is_i2s:
+        # adau7002 I2S: native 2ch/32-bit; calculate_aci() picks the live channel.
+        return ["arecord", "-D", device, "-c2", "-r", "48000", "-f", "S32_LE",
+                "-d", "15", filename]
+    # USB / generic: plughw lets ALSA convert any mic's native rate/format/
+    # channels down to mono 48kHz 16-bit, which soundfile + BirdNET read cleanly.
+    return ["arecord", "-D", device, "-c1", "-r", "48000", "-f", "S16_LE",
+            "-d", "15", filename]
+
 print("Loading model...")
 analyzer = Analyzer()
 sign_in()
 whitelist = fetch_whitelist()
+audio_device, audio_is_i2s = select_audio_device()
 print("Ready. Listening continuously. Press Ctrl+C to stop.\n")
 
 while True:
@@ -320,12 +389,20 @@ while True:
     filename = f"/home/magora/recording_{timestamp}.wav"
     now = datetime.now(timezone.utc)
 
+    # No mic found at startup (or it was unplugged) — keep trying to (re)detect
+    # one before each capture so a hot-plugged mic gets picked up.
+    if audio_device is None:
+        audio_device, audio_is_i2s = detect_audio_device()
+        if audio_device is None:
+            print(f"{now.strftime('%H:%M:%S')} no audio device — retrying in 10s")
+            time.sleep(10)
+            continue
+        print(f"Audio device: {audio_device} ({'I2S adau7002' if audio_is_i2s else 'USB/generic'})")
+
     try:
-        result = subprocess.run([
-            "arecord", "-D", "hw:adau7002,0",
-            "-c2", "-r", "48000", "-f", "S32_LE",
-            "-d", "15", filename
-        ], capture_output=True, timeout=30)
+        result = subprocess.run(
+            arecord_cmd(audio_device, audio_is_i2s, filename),
+            capture_output=True, timeout=30)
     except subprocess.TimeoutExpired:
         # arecord wedged on the audio device (it should finish in ~15s). Kill it so
         # the device is released, skip this window, and keep looping instead of
@@ -334,6 +411,8 @@ while True:
         print(f"{now.strftime('%H:%M:%S')} arecord timed out (audio device wedged) — killed it, skipping window")
         if os.path.exists(filename):
             os.remove(filename)
+        # Mic may have been unplugged/swapped — re-detect before the next window.
+        audio_device, audio_is_i2s = detect_audio_device()
         time.sleep(2)
         continue
 
@@ -342,6 +421,8 @@ while True:
         print(f"{now.strftime('%H:%M:%S')} arecord failed (rc={result.returncode}): {err}")
         if os.path.exists(filename):
             os.remove(filename)
+        # Device may have changed or re-enumerated (common right after boot) — re-detect.
+        audio_device, audio_is_i2s = detect_audio_device()
         time.sleep(2)
         continue
 
