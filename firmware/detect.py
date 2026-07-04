@@ -311,7 +311,11 @@ def fetch_whitelist():
     return None
 
 def list_capture_cards():
-    """Parse `arecord -l` into a list of (card_number, id, description)."""
+    """Return [(card_number, full_lowercased_arecord_line)] for each capture card.
+    The whole line is kept (not just the card name) because the 'USB' marker
+    often appears in the device half, e.g.:
+      "card 1: Microphone [UAC 1.0 Microphone], device 0: USB Audio [USB Audio]"
+    """
     try:
         out = subprocess.run(
             ["arecord", "-l"], capture_output=True, text=True, timeout=10
@@ -321,11 +325,17 @@ def list_capture_cards():
         return []
     cards = []
     for line in out.splitlines():
-        # e.g. "card 1: Device [USB PnP Sound Device], device 0: USB Audio [...]"
-        m = re.match(r"card (\d+): (\S+) \[([^\]]*)\]", line)
+        m = re.match(r"card (\d+):", line)
         if m:
-            cards.append((int(m.group(1)), m.group(2), m.group(3)))
+            cards.append((int(m.group(1)), line.lower()))
     return cards
+
+def is_usb_card(num, line):
+    """True if the card is a USB device. The kernel exposes
+    /proc/asound/card<N>/usbid only for USB sound cards — a definitive test
+    that doesn't depend on how the mic names itself. Fall back to scanning the
+    full arecord line for 'usb'."""
+    return os.path.exists(f"/proc/asound/card{num}/usbid") or "usb" in line
 
 def detect_audio_device():
     """Auto-detect a capture device so any attached mic 'just works'.
@@ -342,14 +352,14 @@ def detect_audio_device():
     cards = list_capture_cards()
     if not cards:
         return (None, False)
-    for num, cid, desc in cards:
-        if "usb" in f"{cid} {desc}".lower():
+    for num, line in cards:
+        if is_usb_card(num, line):
             return (f"plughw:{num},0", False)
-    for num, cid, desc in cards:
-        if "adau7002" in f"{cid} {desc}".lower():
+    for num, line in cards:
+        if "adau7002" in line:
             return ("hw:adau7002,0", True)
-    for num, cid, desc in cards:
-        if "bcm2835" not in f"{cid} {desc}".lower():
+    for num, line in cards:
+        if "bcm2835" not in line:
             return (f"plughw:{num},0", False)
     return (f"plughw:{cards[0][0]},0", False)
 
