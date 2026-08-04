@@ -130,9 +130,14 @@ log "Downloading detect.py (${DETECT_SHA:0:7})..."
 wget -q -O /home/magora/detect.py \
   "https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/${DETECT_SHA}/firmware/detect.py"
 
+# From `release`, NOT `main`. Everything a stranger's node fetches at first boot comes from a
+# pointer that only advances after the walkthrough has been re-verified against it — otherwise
+# every unverified commit to main is coupled to somebody's first-boot experience, and "it broke"
+# becomes unreproducible because main has moved since. detect.py is pinned harder still (an exact
+# SHA above); this file changes rarely, so a verified branch pointer is proportionate.
 log "Downloading birdnet.service..."
 wget -q -O /etc/systemd/system/birdnet.service \
-  https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/main/firmware/birdnet.service
+  https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/release/firmware/birdnet.service
 systemctl daemon-reload
 
 # Set up Python environment
