@@ -48,8 +48,22 @@ WIFI_SSID=$(read_config wifi_ssid)
 WIFI_PASSWORD=$(read_config wifi_password)
 WIFI_COUNTRY=$(read_config wifi_country)
 [ -z "$WIFI_COUNTRY" ] && WIFI_COUNTRY="US"
+SSH_PASSWORD=$(read_config ssh_password)
 
 log "Node: $NODE_NAME"
+
+# Set this node's SSH password, if the config carries one.
+#
+# The image ships the `pi` account locked (customize-image.sh randomises its password and discards
+# the plaintext), so SSH is unreachable until this runs. That makes shared-credential access
+# impossible: a node is only reachable with the password its own config gave it. Configs written
+# before this field existed simply leave the account locked, which is the safe outcome.
+if [ -n "$SSH_PASSWORD" ]; then
+  echo "pi:$SSH_PASSWORD" | chpasswd
+  log "SSH password set for this node."
+else
+  log "No ssh_password in config — pi account stays locked (SSH unavailable)."
+fi
 
 # Configure WiFi
 log "Configuring WiFi ($WIFI_SSID)..."

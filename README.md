@@ -2,7 +2,7 @@
 
 A distributed acoustic biodiversity monitoring network for detecting and logging birds, insects, and soundscape health using low-cost hardware and open-source AI.
 
-Each node is a Raspberry Pi Zero 2W with an INMP441 MEMS microphone running BirdNET for species identification and a continuous Acoustic Complexity Index (ACI) for insect and soundscape monitoring. All data flows into a central Supabase database with PostGIS geospatial indexing.
+Each node is a Raspberry Pi with a microphone, running BirdNET for species identification and a continuous Acoustic Complexity Index (ACI) for insect and soundscape monitoring. All data flows into a central Supabase database with PostGIS geospatial indexing.
 
 The goal is a community-owned network of listening stations that generates research-grade biodiversity data — accessible to citizen scientists, naturalists, and institutions alike.
 
@@ -19,32 +19,44 @@ The goal is a community-owned network of listening stations that generates resea
 
 ## Hardware
 
+There are two builds. **[BUILD.md](BUILD.md) is the canonical guide** — parts, prices and commands
+live there and nowhere else.
+
+**Promoted build — no soldering.** A USB microphone on a Raspberry Pi 4. Make this one if you're
+building your first node.
+
 | Component | Model | Cost |
 |---|---|---|
-| Compute | Raspberry Pi Zero 2W | ~$15 |
-| Microphone | INMP441 I2S MEMS | ~$5 |
-| Storage | 32GB microSD (Class 10) | ~$8 |
-| Power | USB-C 5V 2.5A adapter | ~$10 |
+| Compute | Raspberry Pi 4 Model B (2GB) | ~$55 |
+| Microphone | Movo M1 **USB** lavalier | ~$20 |
+| Storage | 64GB high-endurance microSD | ~$15 |
+| Power | Official Raspberry Pi 15W USB-C | ~$8–10 |
+| Weatherproofing | Enclosure, gland, mic shield, desiccant | ~$30–50 |
 
-**Total per node: ~$38**
+**Total per node: ~$128–165.** Full list, including why the cheaper board is a false economy, in
+[BUILD.md](BUILD.md).
 
-See [hardware/WIRING.md](hardware/WIRING.md) for full wiring instructions.
+**Reference build — requires soldering.** INMP441 I2S MEMS microphone wired to the GPIO header on a
+Pi Zero 2W, ~$38. Supported but not promoted; it's what the network's existing nodes run. Wiring in
+[hardware/WIRING.md](hardware/WIRING.md).
 
 ---
 
 ## Quick start
 
-1. Flash Raspberry Pi OS Lite (64-bit) to a microSD card
-2. Enable SSH and configure WiFi via the Raspberry Pi Imager
-3. Wire the INMP441 microphone — see [hardware/WIRING.md](hardware/WIRING.md)
-4. SSH into your Pi and run the setup script:
+1. **Buy the parts** — see [BUILD.md](BUILD.md)
+2. **Register your place** at the [Magora portal](https://magora-portal.vercel.app/register) and
+   download `magora-config.json`
+3. **Flash** the [pre-built node image](https://github.com/magora-project/magora-acoustic-biodiversity/releases/latest/download/magora-node.img.xz)
+   with the Raspberry Pi Imager
+4. **Copy `magora-config.json`** to the `bootfs` drive, at the top level
+5. **Power on.** First boot takes 25–40 minutes while it installs itself
+6. **Watch for your first detection** on your node's page
 
-```bash
-curl -sSL https://raw.githubusercontent.com/noahwaldron55/magora-network/main/firmware/setup.sh | bash
-```
+No SSH, no terminal, and no editing files on the Pi. The config file on the boot partition is the
+entire configuration step — `magora-firstrun.sh` reads it on first boot and provisions the node.
 
-5. Edit `/home/magora/location.json` with your coordinates
-6. Register your node at the Magora Network portal (coming soon)
+Step-by-step, written for someone who has never opened a terminal: **[BUILD.md](BUILD.md)**.
 
 ---
 
@@ -61,15 +73,20 @@ All detections are logged to a central Supabase PostgreSQL database with PostGIS
 ## Project structure
 
 ```
-magora-network/
+magora-acoustic-biodiversity/
 ├── firmware/
-│   ├── detect.py          # Main detection loop
-│   ├── setup.sh           # One-command node setup (coming soon)
-│   └── birdnet.service    # systemd service file
+│   ├── detect.py                # Main detection loop (BirdNET + ACI)
+│   ├── magora-firstrun.sh       # First-boot self-provisioning from magora-config.json
+│   ├── magora-firstrun.service  # systemd unit for the above
+│   └── birdnet.service          # systemd service for detect.py
+├── build/
+│   └── customize-image.sh       # Turns Pi OS Lite into the Magora node image (CI)
 ├── hardware/
-│   └── WIRING.md          # INMP441 wiring guide
+│   └── WIRING.md                # INMP441 wiring (reference build)
+├── worker/                      # Fly.io BirdNET queue consumer for mobile Listens
 ├── docs/
-│   └── ARCHITECTURE.md    # System architecture
+│   └── ARCHITECTURE.md          # System architecture
+├── BUILD.md                     # Canonical build guide — parts, prices, walkthrough
 ├── README.md
 ├── CONTRIBUTING.md
 └── LICENSE

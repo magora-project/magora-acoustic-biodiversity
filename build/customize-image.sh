@@ -64,10 +64,19 @@ fi
 # Belt-and-suspenders: ssh touchfile on bootfs
 touch "$MOUNT_DIR/boot/ssh"
 
-# Create debug SSH user: pi / magora123
-# Lets you SSH in and run: journalctl -u birdnet -f
-echo "Creating debug SSH user (pi / magora123)..."
-HASH=$(openssl passwd -6 'magora123')
+# Create the `pi` account with an UNKNOWABLE password.
+#
+# Pi OS requires a user account to exist or first boot stalls waiting for one, so we cannot simply
+# omit this. But the image is a public download and this repo is public, so any password written
+# here is a published credential on every node built from it — including strangers' nodes, on their
+# home networks. This previously baked in `pi / magora123`.
+#
+# Instead: generate a random password, write only its hash, and never record the plaintext. The
+# account exists (Pi OS is happy) and nobody can log into it. magora-firstrun.sh then sets a real
+# password from the per-node `ssh_password` in magora-config.json, so remote debugging still works —
+# with a credential unique to each node rather than shared by all of them.
+echo "Creating locked pi account (password randomised and discarded)..."
+HASH=$(openssl passwd -6 "$(openssl rand -base64 32)")
 echo "pi:$HASH" > "$MOUNT_DIR/boot/userconf.txt"
 
 # Enable I2S mic overlay

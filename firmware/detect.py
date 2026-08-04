@@ -12,11 +12,15 @@ from astral.sun import sun
 from birdnetlib import Recording
 from birdnetlib.analyzer import Analyzer
 
-SCRIPT_URL = "https://script.google.com/macros/s/AKfycbw1MS_MwASMPbl6W0nvv5ChYLnwtEcfUOkAZSeKLSJ9bmS753Vdhnhn_3wjFCSmJwqYgw/exec"
+# Legacy Google Sheets mirror. OFF unless SHEETS_WEBHOOK_URL is set — a public build must never
+# post to it. The endpoint takes unauthenticated writes, so shipping a hardcoded URL to every
+# external builder would hand out an open write surface. Supabase is the system of record either
+# way; this is a personal dashboard mirror, so leaving it unset costs a node nothing.
+SCRIPT_URL = os.environ.get("SHEETS_WEBHOOK_URL", "")
 LOCATION_FILE = "/home/magora/location.json"
 QUEUE_FILE = "/home/magora/retry_queue.json"
 ACI_QUEUE_FILE = "/home/magora/aci_queue.json"
-MIN_CONF = 0.20      # detection floor; BOU study: 0.1–0.3 = "detect as many as possible"
+MIN_CONF = 0.25      # detection floor; BOU study: 0.1–0.3 = "detect as many as possible"
 SENSITIVITY = 1.25   # sigmoid sensitivity; BirdNET-Pi high-sensitivity default (range 0.5–1.5)
 OVERLAP = 1.5        # seconds of overlap between BirdNET's 3s windows. BOU study found ~2.0
                      # optimal; 1.5 balances detection richness against Pi Zero 2W analysis time.
@@ -91,6 +95,11 @@ def save_queue(path, queue):
         json.dump(queue, f)
 
 def post_data(data):
+    # No-op when the Sheets mirror is disabled (the default). Returning rather than raising
+    # matters: every caller treats an exception as "network down, queue it for retry", so raising
+    # here would grow retry_queue.json forever on a node that is working perfectly.
+    if not SCRIPT_URL:
+        return
     requests.post(SCRIPT_URL, json=data, timeout=10)
 
 def post_supabase_detection(name, scientific_name, confidence, lat, lon, dawn, aci, time_category, now, temporal):
@@ -131,6 +140,10 @@ def post_supabase_aci(aci, time_category, dawn, now):
         print(f"  Supabase ACI exception: {ex}")
 
 def flush_queue(path):
+    # Leave any pre-existing queue alone when the mirror is off — post_data() is a no-op there, so
+    # draining would silently discard rows a node had saved from before it was disabled.
+    if not SCRIPT_URL:
+        return
     queue = load_queue(path)
     if not queue:
         return
