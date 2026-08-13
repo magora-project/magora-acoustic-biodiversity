@@ -141,35 +141,68 @@ wget -q -O /etc/systemd/system/birdnet.service \
 systemctl daemon-reload
 
 # Set up Python environment
-log "Checking Python environment..."
-if /home/magora/birdnet-env/bin/python3 -c "import birdnetlib, librosa" 2>/dev/null; then
-  log "Python environment OK (birdnetlib + librosa verified)."
-else
-  log "Pre-installed env incomplete — running pip install (takes 30-40 min on Pi Zero 2W)..."
+#
+# The image ships this environment pre-installed and verified (the build loads the BirdNET model
+# under emulation and refuses to publish an image where that fails), so the healthy path here is a
+# check that passes in a second. The rebuild below is a repair path, not the normal route.
+REQUIREMENTS="/usr/local/share/magora/requirements.txt"
 
-  # Swap helps prevent OOM during large pip builds
+# Check what actually has to work, not a proxy for it.
+#
+# This check used to be `import birdnetlib, librosa`. Both of those can import while the thing that
+# matters still fails, and in August 2026 they did: librosa 1.0.0 dropped `audioread`, birdnetlib
+# imports audioread at module scope without declaring it, and `from birdnetlib import Recording` —
+# the exact line detect.py runs — died with ModuleNotFoundError. So check that line itself, plus the
+# shim birdnetlib reaches the model through.
+env_ok() {
+  /home/magora/birdnet-env/bin/python3 -c "
+import numpy, requests, astral, soundfile, audioread, librosa
+import tflite_runtime.interpreter
+from birdnetlib import Recording
+from birdnetlib.analyzer import Analyzer
+" 2>/dev/null
+}
+
+log "Checking Python environment..."
+if env_ok; then
+  log "Python environment OK (pre-installed, imports verified)."
+else
+  log "WARNING: pre-installed env is unusable — rebuilding from pinned requirements."
+  log "This should not happen on a current image. Expect 15-40 minutes."
+
+  # Swap helps prevent OOM during large pip installs
   fallocate -l 512M /swapfile 2>/dev/null && chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile || true
 
   apt-get update -q 2>&1 | tail -1 >> "$STATUS_FILE"
   apt-get install -y -q python3-venv 2>&1 | tail -1 >> "$STATUS_FILE"
+  rm -rf /home/magora/birdnet-env
   python3 -m venv /home/magora/birdnet-env
 
-  pip_pkg() {
-    log "  pip: $1..."
-    if timeout 600 /home/magora/birdnet-env/bin/pip install --prefer-binary -q "$1"; then
-      log "  $1 OK"
-    else
-      log "  WARNING: $1 failed or timed out (exit $?)"
-    fi
-  }
+  # Prefer the pins baked into the image; fetch them only if this is an older image that predates
+  # them. Never fall back to unpinned installs — that is the bug this whole path exists to repair.
+  if [ ! -f "$REQUIREMENTS" ]; then
+    log "No baked requirements.txt — fetching pins from release..."
+    mkdir -p /usr/local/share/magora
+    wget -q -O "$REQUIREMENTS" \
+      https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/release/firmware/requirements.txt \
+      || log "ERROR: could not fetch requirements.txt."
+  fi
 
-  pip_pkg "numpy"
-  pip_pkg "requests"
-  pip_pkg "astral"
-  pip_pkg "soundfile"
-  pip_pkg "ai-edge-litert"
-  pip_pkg "librosa"
-  pip_pkg "birdnetlib"
+  if [ -s "$REQUIREMENTS" ]; then
+    log "Installing pinned requirements (wheels only)..."
+    # --only-binary=:all: — a Pi must never be asked to compile scipy. Better to fail in a minute
+    # with a clear message than to grind for hours and fail anyway.
+    # --index-url — Pi OS points pip at piwheels as an extra index; it carries non-PEP440 relics
+    # (joblib-0.7.0d) that produce alarming "Invalid wheel filename" noise. Every pin resolves on
+    # PyPI proper, so use only that.
+    if /home/magora/birdnet-env/bin/pip install \
+         --no-cache-dir --only-binary=:all: --index-url https://pypi.org/simple \
+         -r "$REQUIREMENTS" 2>&1 | tail -5 >> "$STATUS_FILE"; then
+      log "pip install finished."
+    else
+      log "ERROR: pinned pip install failed."
+    fi
+  fi
 
   PYVER=$(/home/magora/birdnet-env/bin/python3 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')")
   TFLITE="/home/magora/birdnet-env/lib/python${PYVER}/site-packages/tflite_runtime"
@@ -178,7 +211,13 @@ else
   printf 'from ai_edge_litert.interpreter import Interpreter\ntry:\n    from ai_edge_litert.interpreter import load_delegate\nexcept ImportError:\n    load_delegate = None\n' > "$TFLITE/interpreter.py"
 
   swapoff /swapfile && rm /swapfile || true
-  log "Python install complete."
+
+  if env_ok; then
+    log "Python environment rebuilt successfully."
+  else
+    log "ERROR: environment still incomplete after rebuild. birdnet will not start."
+    log "Details: $(/home/magora/birdnet-env/bin/python3 -c 'from birdnetlib import Recording' 2>&1 | tail -1)"
+  fi
 fi
 
 chown -R magora:magora /home/magora
@@ -186,17 +225,72 @@ chown -R magora:magora /home/magora
 # Start BirdNET
 log "Enabling and starting birdnet.service..."
 systemctl enable birdnet.service
-systemctl start birdnet.service
+systemctl start birdnet.service || true
 
-# Verify it started
-sleep 15
-if systemctl is-active --quiet birdnet.service; then
-  log "birdnet.service is running."
+# Verify it actually stayed up.
+#
+# `systemctl start` returning, and even systemd logging "Started birdnet.service", says only that
+# the process was spawned. detect.py died on an import a moment later, and because the unit is
+# Restart=always it kept being respawned — so a single instantaneous check can catch it mid-restart
+# and read as healthy. Watch it for a while and require it to be up at the end AND not to have
+# accumulated restarts.
+log "Watching birdnet.service for 45s..."
+sleep 45
+BIRDNET_STATE=$(systemctl is-active birdnet.service 2>/dev/null || true)
+BIRDNET_RESTARTS=$(systemctl show birdnet.service -p NRestarts --value 2>/dev/null || echo 0)
+
+if [ "$BIRDNET_STATE" = "active" ] && [ "${BIRDNET_RESTARTS:-0}" -eq 0 ]; then
+  BIRDNET_OK=yes
 else
-  log "WARNING: birdnet.service failed to start. Check: journalctl -u birdnet"
+  BIRDNET_OK=no
 fi
 
 # Mark complete and disable self
 touch "$COMPLETE_FLAG"
 systemctl disable magora-firstrun.service
-log "=== Magora Firstrun Complete — $NODE_NAME is now active ==="
+
+# The verdict, written where a steward can actually read it.
+#
+# This is the change that matters most for anyone debugging a node. A node that joins Wi-Fi but
+# never listens looks identical from outside to one that is working — the portal just says "no
+# heartbeat yet" — and the steward has no monitor, no keyboard, and no password. What they DO have
+# is a card reader: /boot/firmware is the FAT partition that mounts as `bootfs` on any laptop.
+#
+# So the last thing firstrun does is write a plain verdict there. Previously it printed
+# "...is now active" unconditionally, including on the boot where birdnet was dead — a false
+# success banner that sent one debugging session looking everywhere except at the actual failure.
+{
+  echo ""
+  echo "================ MAGORA NODE STATUS ================"
+  echo "node:      $NODE_NAME ($NODE_ID)"
+  echo "firstrun:  complete at $(date '+%Y-%m-%d %H:%M:%S')"
+  if [ "$BIRDNET_OK" = "yes" ]; then
+    echo "birdnet:   active"
+    echo ""
+    echo "This node is listening. Detections should appear on its portal page"
+    echo "within the hour."
+  else
+    echo "birdnet:   FAILED TO START  (state=$BIRDNET_STATE restarts=$BIRDNET_RESTARTS)"
+    echo ""
+    echo "This node is on the network but is NOT listening. Nothing will appear"
+    echo "on its portal page until this is fixed."
+    echo ""
+    echo "The error is in birdnet.log, on this same drive — open it and read the"
+    echo "last few lines. The most useful line is usually the final one."
+    echo ""
+    echo "Last lines of the service log:"
+    tail -n 20 /boot/firmware/birdnet.log 2>/dev/null | sed 's/^/    /' || echo "    (birdnet.log not written yet)"
+    echo ""
+    echo "With SSH access, more detail: journalctl -u birdnet -n 100"
+  fi
+  echo "===================================================="
+} >> "$STATUS_FILE" 2>/dev/null || true
+
+if [ "$BIRDNET_OK" = "yes" ]; then
+  log "=== Magora Firstrun Complete — $NODE_NAME is now active ==="
+else
+  log "=== Magora Firstrun FAILED — $NODE_NAME is NOT listening ==="
+  log "birdnet.service did not stay up (state=$BIRDNET_STATE, restarts=$BIRDNET_RESTARTS)."
+  log "Read birdnet.log on the bootfs drive, or: journalctl -u birdnet -n 100"
+  exit 1
+fi

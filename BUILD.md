@@ -92,9 +92,8 @@ Put it at the top level of that drive — not inside any folder. That's the whol
 
 Put the card in the Pi, close the enclosure, and plug in the power.
 
-**The first boot takes 25–40 minutes.** The node is connecting to Wi-Fi, installing the bird
-identification model, and registering itself. This only happens once. Later boots take about a
-minute.
+**The first boot takes about five minutes.** The node is connecting to Wi-Fi, registering itself,
+and starting to listen. This only happens once. Later boots take about a minute.
 
 Nothing visible happens during this time. That's expected. Leave it alone.
 
@@ -109,9 +108,22 @@ That's it. Your place is on the record, and it will keep speaking without you.
 
 ## If something isn't working
 
-**Nothing after an hour.** Check the `bootfs` drive: `magora-status.txt` is a running log the node
-writes as it sets itself up, and it will usually say plainly what went wrong. The most common cause
-is a Wi-Fi typo in `magora-config.json`.
+**Nothing after an hour.** Take the card out and put it in your computer. On the `bootfs` drive,
+open `magora-status.txt` and scroll to the bottom. The node writes a plain verdict there when it
+finishes setting itself up:
+
+```
+================ MAGORA NODE STATUS ================
+node:      Your Node (a1b2c3d4)
+firstrun:  complete at 2026-08-13 19:04:11
+birdnet:   active
+```
+
+If it says `birdnet: active`, the node is listening and the problem is elsewhere. If it says
+`FAILED TO START`, the same file quotes the error, and the full log is in `birdnet.log` on that
+same drive — the last few lines are the useful ones. The most common cause of no status at all is
+a Wi-Fi typo in `magora-config.json`; everything above the verdict is a running log of setup, and
+it usually says plainly where it stopped.
 
 **The log says "no audio capture device detected."** Some USB microphones take a moment to appear,
 and the node retries on its own — but if it keeps saying this, unplug and replug the microphone,

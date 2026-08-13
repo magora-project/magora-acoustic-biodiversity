@@ -6,8 +6,25 @@ on:
     paths:
       - 'firmware/magora-firstrun.sh'
       - 'firmware/magora-firstrun.service'
+      - 'firmware/requirements.txt'
       - 'build/**'
+      - '.github/workflows/build-image.yml'
   workflow_dispatch:
+
+# The base OS is PINNED, not `latest`.
+#
+# This workflow used to fetch `raspios_lite_arm64_latest`, a redirect that upstream repoints
+# whenever they cut a release. That makes the base OS — and with it the Python version the whole
+# runtime is resolved against — an input nobody in this repo controls or records. Two identical
+# commits could produce two different images, and the difference would only surface as a stranger's
+# node failing to boot weeks later.
+#
+# Pinned to the release that was current on 2026-08-13. Bumping it is a deliberate act: change these
+# two values together, expect the Python version to move, and re-resolve firmware/requirements.txt
+# for the new interpreter before trusting the build.
+env:
+  BASE_IMAGE_URL: https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-2026-06-19/2026-06-18-raspios-trixie-arm64-lite.img.xz
+  BASE_IMAGE_SHA256: acff736ca7945e3b305f07cda4abdb870910e12634991da69783611756e381b3
 
 jobs:
   build:
@@ -20,18 +37,40 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Install dependencies
-        run: sudo apt-get install -y kpartx xz-utils
-
-      - name: Download Pi OS Lite (64-bit)
         run: |
-          wget -q --show-progress -L \
-            https://downloads.raspberrypi.com/raspios_lite_arm64_latest \
-            -O raspios-lite-arm64.img.xz
+          sudo apt-get update -q
+          sudo apt-get install -y kpartx xz-utils parted qemu-user-static binfmt-support
+
+      # Registers aarch64 binfmt handlers with the F (fix-binary) flag, so emulation keeps working
+      # inside the chroot. The qemu-user-static package above additionally provides the static
+      # binary that customize-image.sh copies into the image — both paths are wanted.
+      - name: Set up QEMU (binfmt handlers)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Download Pi OS Lite (64-bit, pinned)
+        run: |
+          wget -q --show-progress -L "$BASE_IMAGE_URL" -O raspios-lite-arm64.img.xz
+          echo "$BASE_IMAGE_SHA256  raspios-lite-arm64.img.xz" | sha256sum -c -
           xz -d raspios-lite-arm64.img.xz
           mv raspios-lite-arm64.img magora-node.img
 
       - name: Customize image
         run: sudo bash build/customize-image.sh magora-node.img
+
+      # The build gate lives inside customize-image.sh (it loads the BirdNET model under QEMU and
+      # exits non-zero if that fails). This step just surfaces what shipped, so a future incident
+      # can read the exact versions off the run without unpacking the image.
+      - name: Show baked environment
+        run: |
+          echo "=== Image size ==="
+          ls -lh magora-node.img
+          echo "=== Baked Python environment ==="
+          BOOT=$(sudo losetup -f --show -P magora-node.img)
+          sudo mkdir -p /mnt/mb && sudo mount "${BOOT}p1" /mnt/mb
+          sudo cat /mnt/mb/magora-env-manifest.txt
+          sudo umount /mnt/mb && sudo losetup -d "$BOOT"
 
       - name: Compress image
         run: xz -T0 -6 magora-node.img
@@ -50,5 +89,9 @@ jobs:
             **After flashing:** Copy your `magora-config.json` to the SD card's boot drive (the small partition that appears in Windows Explorer).
 
             The node will self-provision on first boot — no SSH, no terminal needed.
+
+            This image ships a complete, pre-installed, version-pinned Python environment, verified
+            to load the BirdNET model at build time. First boot takes a few minutes rather than
+            30-40, and does not depend on what PyPI serves on the day you flash the card.
           files: magora-node.img.xz
           token: ${{ secrets.GITHUB_TOKEN }}
