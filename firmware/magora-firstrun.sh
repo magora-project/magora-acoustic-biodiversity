@@ -85,15 +85,29 @@ nmcli connection add type wifi ifname wlan0 con-name magora-wifi \
   ipv4.method auto
 nmcli connection up magora-wifi || true
 
-# Wait for network
+# Wait for real HTTPS reachability. ping/link state is not enough: a route can
+# have an interface while GitHub downloads still stall on an unusable IPv6 path.
 log "Waiting for network..."
+NETWORK_OK=no
 for i in $(seq 1 30); do
-  ping -c1 -W2 8.8.8.8 &>/dev/null && { log "Network up."; break; }
+  if curl -4 -fsSL --connect-timeout 15 --max-time 120 --retry 3 \
+      https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/main/firmware/detect.py \
+      -o /dev/null; then
+    NETWORK_OK=yes
+    log "Network up (HTTPS reachable)."
+    break
+  fi
   sleep 2
 done
 
-if ! ping -c1 -W2 8.8.8.8 &>/dev/null; then
-  log "ERROR: No network after 60s. Check WiFi credentials in magora-config.json."
+if [ "$NETWORK_OK" != "yes" ]; then
+  log "ERROR: HTTPS connectivity unavailable after 60s. Check WiFi credentials in magora-config.json."
+  {
+    echo ""
+    echo "================ MAGORA NODE STATUS ================"
+    echo "firstrun: FAILED — HTTPS connectivity unavailable"
+    echo "===================================================="
+  } >> "$STATUS_FILE" 2>/dev/null || true
   exit 1
 fi
 
@@ -127,8 +141,22 @@ LOCEOF
 # Update DETECT_SHA intentionally when releasing a new firmware version.
 DETECT_SHA=f0c1940acd7b35877e0af44a810fc3d2bc27ab9a
 log "Downloading detect.py (${DETECT_SHA:0:7})..."
-wget -q -O /home/magora/detect.py \
-  "https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/${DETECT_SHA}/firmware/detect.py"
+DETECT_TMP="${DETECT_TARGET:-/home/magora/detect.py}.tmp.$$"
+if curl -4 -fsSL --connect-timeout 15 --max-time 120 --retry 3 \
+    "https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/${DETECT_SHA}/firmware/detect.py" \
+    -o "$DETECT_TMP"; then
+  mv "$DETECT_TMP" /home/magora/detect.py
+else
+  rm -f "$DETECT_TMP"
+  log "ERROR: detect.py download failed; existing target, if any, was preserved."
+  {
+    echo ""
+    echo "================ MAGORA NODE STATUS ================"
+    echo "firstrun: FAILED — detect.py download failed"
+    echo "===================================================="
+  } >> "$STATUS_FILE" 2>/dev/null || true
+  exit 1
+fi
 
 # From `release`, NOT `main`. Everything a stranger's node fetches at first boot comes from a
 # pointer that only advances after the walkthrough has been re-verified against it — otherwise
@@ -136,8 +164,22 @@ wget -q -O /home/magora/detect.py \
 # becomes unreproducible because main has moved since. detect.py is pinned harder still (an exact
 # SHA above); this file changes rarely, so a verified branch pointer is proportionate.
 log "Downloading birdnet.service..."
-wget -q -O /etc/systemd/system/birdnet.service \
-  https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/release/firmware/birdnet.service
+SERVICE_TMP="/etc/systemd/system/birdnet.service.tmp.$$"
+if curl -4 -fsSL --connect-timeout 15 --max-time 120 --retry 3 \
+    https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/release/firmware/birdnet.service \
+    -o "$SERVICE_TMP"; then
+  mv "$SERVICE_TMP" /etc/systemd/system/birdnet.service
+else
+  rm -f "$SERVICE_TMP"
+  log "ERROR: birdnet.service download failed; existing target, if any, was preserved."
+  {
+    echo ""
+    echo "================ MAGORA NODE STATUS ================"
+    echo "firstrun: FAILED — birdnet.service download failed"
+    echo "===================================================="
+  } >> "$STATUS_FILE" 2>/dev/null || true
+  exit 1
+fi
 systemctl daemon-reload
 
 # Set up Python environment
@@ -183,9 +225,22 @@ else
   if [ ! -f "$REQUIREMENTS" ]; then
     log "No baked requirements.txt — fetching pins from release..."
     mkdir -p /usr/local/share/magora
-    wget -q -O "$REQUIREMENTS" \
-      https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/release/firmware/requirements.txt \
-      || log "ERROR: could not fetch requirements.txt."
+    REQUIREMENTS_TMP="${REQUIREMENTS}.tmp.$$"
+    if curl -4 -fsSL --connect-timeout 15 --max-time 120 --retry 3 \
+        https://raw.githubusercontent.com/magora-project/magora-acoustic-biodiversity/release/firmware/requirements.txt \
+        -o "$REQUIREMENTS_TMP"; then
+      mv "$REQUIREMENTS_TMP" "$REQUIREMENTS"
+    else
+      rm -f "$REQUIREMENTS_TMP"
+      log "ERROR: could not fetch requirements.txt. Existing target, if any, was preserved."
+      {
+        echo ""
+        echo "================ MAGORA NODE STATUS ================"
+        echo "firstrun: FAILED — requirements.txt download failed"
+        echo "===================================================="
+      } >> "$STATUS_FILE" 2>/dev/null || true
+      exit 1
+    fi
   fi
 
   if [ -s "$REQUIREMENTS" ]; then
