@@ -1,12 +1,25 @@
 # Magora Node Contract
 
-This document describes the behavior implemented by the current `firmware/detect.py` on the promoted Raspberry Pi node. It is a contract derived from the running firmware, not a redesign and not a commitment to add behavior to new node types.
+This document has two clearly separated views:
+
+- **Deployed behavior** is the authoritative baseline derived from `detect.py` at commit `f0c1940acd7b35877e0af44a810fc3d2bc27ab9a`, which is pinned by `firmware/magora-firstrun.sh`.
+- **Repository-head differences** describe how current `main` differs from that deployed commit. They are informational and must not be treated as behavior already running on provisioned nodes.
 
 ## Scope and source
 
-- Contract source: `firmware/detect.py` from the pinned node firmware release.
+- Contract source: `firmware/detect.py` at deployed pin `f0c1940acd7b35877e0af44a810fc3d2bc27ab9a`.
+- Deployment pin: `DETECT_SHA=f0c1940acd7b35877e0af44a810fc3d2bc27ab9a` in `firmware/magora-firstrun.sh`.
 - Capture implementation: ALSA `arecord` writes a temporary WAV, BirdNET analyzes it, and the temporary WAV is deleted in the `finally` block after each cycle.
-- The node is provisioned from `magora-config.json`; the first-run script stores the credential and location fields in protected files on the node.
+- `magora-firstrun.sh` writes the node credentials to `/home/magora/secrets.env` with mode `0600`. It creates `/home/magora/location.json` without changing its permissions, so precise coordinates and the node name may remain readable under the service account's normal local umask.
+
+## Deployed behavior differences from repository head
+
+Current repository head `firmware/detect.py` differs from deployed commit `f0c1940acd7b35877e0af44a810fc3d2bc27ab9a` in these ways:
+
+- Confidence floor, named `MIN_CONF`: deployed `0.20`; repository head `0.25`.
+- Sheets mirror: deployed code has a hard-coded, always-used Google Apps Script URL. Repository head reads optional `SHEETS_WEBHOOK_URL` and defaults it to empty.
+- Repository head adds guards so `post_data()` and queue flushing are no-ops when the optional Sheets URL is unset; deployed code has no such guards and assumes the hard-coded URL exists.
+- These are the only `firmware/detect.py` differences between the deployed commit and repository head. They are limited to `MIN_CONF`, the Sheets configuration, and guarding that optional mirror. Authentication, row shapes, capture settings, species whitelist behavior, and queue mechanics described in this document remain shared unless explicitly listed above.
 
 ## Provisioning configuration
 
@@ -48,7 +61,7 @@ Every capture cycle is independent:
 - Target duration: 15 seconds.
 - USB/generic microphones are converted by ALSA to mono, 48 kHz, 16-bit PCM (`S16_LE`).
 - The existing I2S ADAU7002 path captures two channels, native 32-bit, at 48 kHz; `detect.py` selects one live channel for ACI.
-- BirdNET minimum confidence: `0.25`.
+- BirdNET minimum confidence, named `MIN_CONF`: deployed `0.20`; repository head `0.25`.
 - BirdNET sensitivity: `1.25`.
 - BirdNET overlap: `1.5` seconds.
 - Temporary WAVs are deleted on timeout, capture failure, and after successful analysis.
@@ -132,10 +145,10 @@ GET /rest/v1/nodes?id=eq.<node_id>&select=species_whitelist
 using the public anon key and authorization header. The response is read from the first matching node row.
 
 - A non-empty `species_whitelist` array becomes the allowed species set; matching is case-insensitive.
-- A null, missing, or empty array means no whitelist is loaded.
+- A null, missing, or empty server array does **not** invalidate the cache. Both deployed and head code break out after observing this authoritative empty/unset response, then fall back to `/home/magora/species_whitelist.json` if a cached non-empty array exists. Clearing the server value therefore leaves stale filtering active until the cache is removed or a later non-empty whitelist is received.
 - The whitelist is cached at `/home/magora/species_whitelist.json`.
 - If Supabase is unavailable, the node retries up to six times and then uses the cached file if present.
-- If no usable value or cache exists, it runs without species filtering.
+- If no usable server value or cache exists, it runs without species filtering.
 
 A detection is submitted only when:
 
@@ -147,14 +160,13 @@ Applying the per-node whitelist is **current firmware behavior**, but it is not 
 
 ## Legacy Sheets mirror
 
-`SHEETS_WEBHOOK_URL` is a legacy optional mirror for personal dashboards.
+The deployed pin and repository head have different legacy mirror behavior:
 
-- It defaults to unset.
-- When set, ACI and Bird detections are posted as separate JSON objects to that URL.
-- Detection and ACI retry behavior for this mirror uses local JSON queues.
-- The endpoint is considered unauthenticated and unsafe to publish as a node default; the source warning explicitly says public builds must never ship a hard-coded URL.
-- It is not part of the Supabase ingest contract.
-- New node types must **not** implement or depend on the Sheets mirror.
+- **Deployed behavior:** `f0c1940...` contains an always-on, hard-coded Google Apps Script URL in `SCRIPT_URL`; every provisioned node posts to it. This contradicts the repository-head Add Node D2 decision represented by the optional environment configuration below, and is tracked separately as a finding.
+- **Repository-head behavior:** `SCRIPT_URL` is read from `SHEETS_WEBHOOK_URL` and defaults to empty. When unset, Sheets posting and legacy queue flushing are no-ops.
+- When a URL is enabled in repository head, ACI and Bird detections are posted as separate JSON objects to that URL.
+- The endpoint is unauthenticated. New node types must not implement or depend on the Sheets mirror.
+- The deployed mirror is a legacy outbound path and is not part of the Supabase ingest contract.
 
 ## Retry queues and ordering
 
@@ -165,14 +177,18 @@ Applying the per-node whitelist is **current firmware behavior**, but it is not 
 
 Queues contain legacy mirror payload objects, not Supabase detection or ACI rows. Supabase writes are attempted immediately and are not queued by the detection loop.
 
-Within each queue, new items are appended and files are rewritten as JSON arrays. The legacy flush logic loads the queue, walks items in array order, and preserves items whose POST fails. Successful older items are removed before later failures, so remaining items stay in original order.
+Within each queue, new items are appended and files are rewritten as JSON arrays. The Sheets mirror calls `requests.post()` without `raise_for_status()`. Therefore:
+
+- Python transport exceptions (timeouts, connection failures, and similar request-raising exceptions) are caught by the queue callers and items remain for retry.
+- HTTP responses such as 429 or 500 are returned normally and are not exceptions, because `raise_for_status()` is not called. Callers and the flush loop treat those items as successfully delivered and remove them; they are not retained or retried.
+- Successfully delivered items are removed from the queue; remaining items stay in original array order.
 
 The current loop processes queues as follows at the end of a capture cycle:
 
 1. Flush detection legacy mirror items.
 2. Flush ACI legacy mirror items.
 
-These separate queues do **not** provide cross-table ordering, exactly-once delivery, or a retry for failed Supabase writes. A network error queueing the Sheets mirror does not add those rows to the Supabase path. For new Android or other queued-ingest implementations, offline ordering must be specified separately and should not claim parity with this legacy queue behavior.
+These separate queues do not provide cross-table ordering or exactly-once delivery. Supabase detections and ACI rows are attempted immediately and are not queued offline; a Wi-Fi drop can lose those Supabase writes. For new Android implementations, offline ordering and retry semantics must be specified independently.
 
 ## Fixed filters
 
