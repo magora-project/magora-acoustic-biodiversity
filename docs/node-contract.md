@@ -37,7 +37,7 @@ Current repository head `firmware/detect.py` differs from deployed commit `f0c19
 | `wifi_ssid`, `wifi_password`, `wifi_country` | Node network setup. |
 | `ssh_password` | Optional SSH password for the Pi; absent means the Pi account stays locked. |
 
-`detect.py` reads `SUPABASE_ANON_KEY`, `NODE_EMAIL`, `NODE_PASSWORD`, and `NODE_ID` from `/home/magora/secrets.env`. Location data comes from `/home/magora/location.json`. Do not copy credentials into application source or repository data.
+`detect.py` reads `SUPABASE_ANON_KEY`, `NODE_EMAIL`, `NODE_PASSWORD`, and `NODE_ID` from `/home/magora/secrets.env`. Location data comes from `/home/magora/location.json`. If that file is missing, malformed, or lacks a field, `get_location()` silently falls back to `43.4`, `-110.7`, and `"Jackson WY"` (`detect.py`). Those fallback coordinates are written into detection rows and supplied to the sunrise-derived fields, so a damaged location configuration can silently mis-geotag detections. Do not copy credentials into application source or repository data.
 
 ## Authentication
 
@@ -108,13 +108,13 @@ The HTTP request is made with JSON content, `apikey`, `Authorization: Bearer <no
 
 ### ACI
 
-Each cycle with a valid ACI score is posted to `POST /rest/v1/aci_logs` using the node JWT.
+Each cycle with a valid ACI score is posted to `POST /rest/v1/aci_logs` using the node JWT. `calculate_aci()` rounds its result to three decimal places before posting it.
 
 ```json
 {
   "node_id": "<node UUID>",
   "recorded_at": "<ISO 8601 UTC timestamp>",
-  "aci_score": 0.1234,
+  "aci_score": 0.123,
   "time_category": "Morning",
   "dawn_chorus": true,
   "duration_secs": 15
