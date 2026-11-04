@@ -7,7 +7,7 @@ This document has two clearly separated views:
 
 ## Scope and source
 
-- Contract source: `firmware/detect.py` at deployed pin `f0c1940acd7b35877e0af44a810fc3d2bc27ab9a`.
+- Contract source for nodes provisioned after it became the deployment pin: `firmware/detect.py` at `f0c1940acd7b35877e0af44a810fc3d2bc27ab9a`.
 - Deployment pin: `DETECT_SHA=f0c1940acd7b35877e0af44a810fc3d2bc27ab9a` in `firmware/magora-firstrun.sh`.
 - Capture implementation: ALSA `arecord` writes a temporary WAV, BirdNET analyzes it, and the temporary WAV is deleted in the `finally` block after each cycle.
 - `magora-firstrun.sh` writes the node credentials to `/home/magora/secrets.env` with mode `0600`. It creates `/home/magora/location.json` without changing its permissions, so precise coordinates and the node name may remain readable under the service account's normal local umask.
@@ -212,3 +212,22 @@ The current detector does not:
 - upload camera or person data;
 - implement new schema fields for capture chain or environment data;
 - persist Supabase detection/ACI rows through the legacy queue files described above.
+
+## Fleet firmware is provisioned, not upgraded
+
+`magora-firstrun.sh` downloads its current `DETECT_SHA` once, when one-shot first provisioning runs. `magora-firstrun.service` stops itself after its completion flag exists, so changing the pin later does not update `/home/magora/detect.py` on an already provisioned node. The repository can show known pin changes, but it cannot identify which file is installed on each live node.
+
+Git history shows these known detector pins and key changes. This is a historical index, not an installed-fleet inventory.
+
+| Pin | `MIN_CONF` | Capture path | Other visible change |
+| --- | --- | --- | --- |
+| `ce03534...` | `0.35` | Fixed capture command | Location and season filtering enabled |
+| `16489ec...` | `0.25` | Fixed capture command | Location-filter variant |
+| `02d01f7...` | `0.25` | Fixed capture command | Removed BirdNET location filtering |
+| `23ba708...` / `8b564aa...` / `5e09fdc...` / `abbca9b...` | `0.10`, shared baseline | Fixed capture command | Diagnostic capture/filter variants |
+| `ced0ea6...` | `0.07` | Fixed capture command | Albatross exclusions |
+| `40ca863...` | `0.20` | Fixed capture command | Species whitelist filtering |
+| `e05b4b9...` | `0.20` | USB/I2S auto-detection | Initial USB capture support |
+| `f0c1940...` | `0.20` | USB/I2S auto-detection | Improved USB device recognition; deployed pin; hard-coded always-on Sheets URL |
+
+Repository head additionally raises `MIN_CONF` to `0.25`, makes the Sheets URL optional and disabled by default, and guards an unset mirror. These are not installed on older nodes.
