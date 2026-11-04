@@ -66,7 +66,7 @@ Every capture cycle is independent:
 - BirdNET overlap: `1.5` seconds.
 - Temporary WAVs are deleted on timeout, capture failure, and after successful analysis.
 
-The running implementation uses `birdnetlib==0.18.1`, `Analyzer()`, and `Recording(...)`; the image verifies that this environment loads the BirdNET model. Repository docs should not infer a different semantic model-release label from package versions alone. The runtime package and image environment are the pinned provenance of the current implementation.
+The running implementation uses `Analyzer()` and `Recording(...)`. Images built from commit `e565362d9ab5bdc99360bfbc4ef8e9b05e60521d` onward pin `birdnetlib==0.18.1` and verify model loading at image-build time. Repository docs should not infer a different semantic model-release label from package versions alone. Runtime versions on nodes provisioned from earlier images are unknown.
 
 ## Supabase row contract
 
@@ -194,7 +194,7 @@ These separate queues do not provide cross-table ordering or exactly-once delive
 
 Before posting a detection, `detect.py` excludes:
 
-- Human vocalization, human non-vocalization, and human whistling.
+- Human vocal, Human non-vocal, and Human whistling.
 - Crowd, dog, cat, engine, siren, power tools, gun, fireworks, hand saw, chainsaw, car, truck, motorcycle.
 - Laysan Albatross and Black-footed Albatross, as known raven-confusion exclusions.
 - Katydid, cricket, grasshopper, and cicada common names.
@@ -219,15 +219,24 @@ The current detector does not:
 
 Git history shows these known detector pins and key changes. This is a historical index, not an installed-fleet inventory.
 
+The pins below are reconstructed from `git log -p -- firmware/magora-firstrun.sh`; each row was active after the corresponding pin transition. The table is historical, not an installed-fleet inventory.
+
 | Pin | `MIN_CONF` | Capture path | Other visible change |
 | --- | --- | --- | --- |
-| `ce03534...` | `0.35` | Fixed capture command | Location and season filtering enabled |
-| `16489ec...` | `0.25` | Fixed capture command | Location-filter variant |
-| `02d01f7...` | `0.25` | Fixed capture command | Removed BirdNET location filtering |
-| `23ba708...` / `8b564aa...` / `5e09fdc...` / `abbca9b...` | `0.10`, shared baseline | Fixed capture command | Diagnostic capture/filter variants |
-| `ced0ea6...` | `0.07` | Fixed capture command | Albatross exclusions |
-| `40ca863...` | `0.20` | Fixed capture command | Species whitelist filtering |
-| `e05b4b9...` | `0.20` | USB/I2S auto-detection | Initial USB capture support |
-| `f0c1940...` | `0.20` | USB/I2S auto-detection | Improved USB device recognition; deployed pin; hard-coded always-on Sheets URL |
+| `06744307156fa810962223520f26b08c4b0ea1c6` | `0.10` | Fixed I2S capture command | Exact-SHA timezone fix; hard-coded Sheets URL |
+| `ce03534e33bb99dfd25ee4ecc40d22af225e6dc7` | `0.35` | Fixed capture command | Location and season filtering enabled |
+| `16489ece376773560f9ff1b88023840304b023f7` | `0.25` | Fixed capture command | `MIN_CONF` changed from `0.35` |
+| `02d01f79f024383c5a1c05257d5aede65cbe6813` | `0.25` | Fixed capture command | BirdNET location filtering removed |
+| `23ba708268b4f6969d40ccac22c068f18de10e8d` | `0.10` | Fixed capture command | Diagnostic pin; no location filter |
+| `8b564aa5ab47c9a6a7b27a7bd4fdd644fe2fa1f9` | `0.10` | Fixed capture command | Filter variant |
+| `a3cc6a289c137fe9cf85a1a25dff829c981dfd33` | `0.10` | Fixed capture command | Added YAMNet wildlife analysis with `YAMNET_CONF = 0.3` |
+| `5e09fdc47bb4066585bbd75078d4b099cc505f3d` | `0.10` | Fixed capture command | Added BirdNET low-pass preprocessing; YAMNet removed |
+| `abbca9b1b40edd2e8e13124aeac3fc55ac8c2ae4` | `0.10` | Fixed capture command | Clean baseline; filter variant removed |
+| `ced0ea67eb56ea8a94c3134ec56129d0c3a3daab` | `0.07` | Fixed capture command | Albatross exclusions added |
+| `40ca863b52e3feb85cf19513f3ddb6506227bd16` | `0.20` | Fixed capture command | Species whitelist filtering added |
+| `e05b4b92114f64c00cee6dfe000ed341565bc89d` | `0.20` | USB/I2S auto-detection | Initial USB microphone capture support |
+| `f0c1940acd7b35877e0af44a810fc3d2bc27ab9a` | `0.20` | USB/I2S auto-detection | Improved USB device recognition; hard-coded always-on Sheets URL |
 
 Repository head additionally raises `MIN_CONF` to `0.25`, makes the Sheets URL optional and disabled by default, and guards an unset mirror. These are not installed on older nodes.
+
+For images built from commit `e565362d9ab5bdc99360bfbc4ef8e9b05e60521d` onward, the runtime pins include `birdnetlib==0.18.1`; the image build verifies `Analyzer()` loads the BirdNET model. Repository docs should not infer a different semantic model-release label from package versions alone. Runtime versions on nodes provisioned from earlier images are unknown.
